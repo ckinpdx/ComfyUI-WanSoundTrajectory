@@ -1,0 +1,10 @@
+# WanSoundTrajectory dependencies
+#
+# This package uses only basic numpy functions that have existed since ~1.0
+# However, pinning numpy versions is notoriously dangerous - it can conflict
+# with other packages, CUDA versions, or ComfyUI itself.
+#
+# ComfyUI already requires numpy, so you should be fine.
+# If something breaks, it's probably not numpy's fault.
+#
+# numpy>=1.15.0
