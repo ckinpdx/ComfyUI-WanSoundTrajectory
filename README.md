@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/24087880/README.md)
+[README.md](https://github.com/user-attachments/files/24087910/README.md)
 # WanSoundTrajectory
 
 Audio-driven path modulation and trajectory generation for WanMove video generation.
@@ -332,6 +332,84 @@ Generate mathematical motion patterns - no drawing required.
 1. Generator: `diverge`, 5 tracks, amplitude 0.4
 2. Loader: `reverse_time` = True (now it's converging)
 3. Result: Features from edges all collapse to center
+
+---
+
+## Pose To Tracks
+
+Convert DWPose skeleton keypoints to trajectory tracks. Place tracks at body part positions from a single image.
+
+**Requires:** [ComfyUI ControlNet Aux](https://github.com/Fannovel16/comfyui_controlnet_aux) for DWPose Estimator node.
+
+### Keypoint Selections
+
+| Selection | Body Parts |
+|-----------|------------|
+| `head` | Nose |
+| `shoulders` | Left + right shoulder |
+| `elbows` | Left + right elbow |
+| `wrists` | Left + right wrist |
+| `hips` | Left + right hip |
+| `knees` | Left + right knee |
+| `ankles` | Left + right ankle |
+| `upper_body` | Shoulders, elbows, wrists (6 points) |
+| `lower_body` | Hips, knees, ankles (6 points) |
+| `torso` | Shoulders + hips (4 points) |
+| `limbs` | Wrists + ankles (4 points) |
+| `all` | All 18 body keypoints |
+
+### Inputs
+
+| Input | Type | Description |
+|-------|------|-------------|
+| `pose_keypoint` | POSE_KEYPOINT | Connect from DWPose Estimator |
+| `keypoint_selection` | dropdown | Which body parts become tracks |
+| `num_frames` | INT | Frame count (positions repeat since single image) |
+| `target_width` | INT | Scale coordinates to this width |
+| `target_height` | INT | Scale coordinates to this height |
+| `existing_coordinates` | STRING | Optional - append pose tracks to existing |
+| `min_confidence` | FLOAT | Skip low-confidence detections |
+
+### Outputs
+
+| Output | Type | Description |
+|--------|------|-------------|
+| `coordinates` | STRING | Trajectory JSON with one track per keypoint |
+| `width` | INT | Target width (passthrough) |
+| `height` | INT | Target height (passthrough) |
+
+### Workflow
+
+**Basic pose-driven tracks:**
+```
+[Image] → [DWPose Estimator] → POSE_KEYPOINT → [WanPoseToTracks] → coordinates → [WanMove]
+```
+
+**Combined with generator:**
+```
+[WanTrajectoryGenerator] → coordinates ──┐
+                                         ↓
+[DWPose] → [WanPoseToTracks] ← existing_coordinates
+                  ↓
+           combined tracks → [WanSoundTrajectory] → [WanMove]
+```
+
+**With audio modulation:**
+```
+[DWPose] → [WanPoseToTracks] → coordinates → [WanSoundTrajectory] → track_coords → [WanMove]
+                                                    ↑
+                                                 audio
+```
+
+### Tips
+
+1. **Match your resolution**: Set `target_width` and `target_height` to match your actual output resolution.
+
+2. **Check confidence**: If keypoints are missing, lower `min_confidence`. If you're getting phantom points, raise it.
+
+3. **DWPose settings**: In DWPose Estimator, you can disable `detect_hand` and `detect_face` if you only need body keypoints.
+
+4. **Frame inflation bug**: There's a known issue where WanMove sometimes inflates the frame count unexpectedly. Cause unknown - rebuilding the workflow from scratch tends to fix it.
 
 ---
 
