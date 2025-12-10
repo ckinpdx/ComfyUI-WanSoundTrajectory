@@ -1,16 +1,24 @@
+[README.md](https://github.com/user-attachments/files/24087880/README.md)
 # WanSoundTrajectory
 
-Audio-driven path modulation for WanMove video generation.
+Audio-driven path modulation and trajectory generation for WanMove video generation.
 
 ## What it does
 
-Takes a path from KJNodes SplineEditor (or any compatible coordinate source) and modulates it based on audio analysis. The result is camera or object movement that reacts to your music - beats push the path, bass makes it wobble, etc.
+A suite of nodes for creating and manipulating WanMove trajectories:
+
+1. **WanSoundTrajectory** - Modulates paths based on audio analysis (beats, bass, envelope)
+2. **WanTrajectoryGenerator** - Creates mathematical motion patterns (orbit, spiral, bounce, etc.)
+3. **WanTrajectorySaver** - Saves trajectories for reuse
+4. **WanTrajectoryLoader** - Loads saved trajectories with transforms (flip, rotate, rescale)
+
+The result is camera or object movement that can react to music, follow mathematical patterns, or both.
 
 ## Installation
 
 1. Clone or copy this folder to your ComfyUI `custom_nodes` directory:
    ```
-   ComfyUI/custom_nodes/ComfyUI-WanSoundTrajectory/
+   ComfyUI/custom_nodes/WanSoundTrajectory/
    ```
 
 2. Restart ComfyUI
@@ -177,6 +185,155 @@ The `radial_from_center` option is useful for breathing/pulsing effects where yo
 
 - **Input**: Any node that outputs SplineEditor-compatible coordinate JSON
 - **Output**: WanVideoAddWanMoveTracks, WanMove_native, or any node expecting the same format
+
+---
+
+## Trajectory Saver & Loader
+
+Save your SplineEditor paths for reuse with different audio or output specs.
+
+### Saver Node
+
+Saves raw coordinates from SplineEditor to a JSON file with metadata.
+
+**Inputs:**
+| Input | Type | Description |
+|-------|------|-------------|
+| `coordinates` | STRING | Raw coordinates from SplineEditor |
+| `filename` | STRING | Name for the file (no extension) |
+| `width` | INT | Original canvas width these coords were made for |
+| `height` | INT | Original canvas height |
+
+**Saves to:** `ComfyUI-WanSoundTrajectory/saved_trajectories/`
+
+### Loader Node
+
+Loads saved trajectories with optional rescaling, resampling, and transforms.
+
+**Inputs:**
+| Input | Type | Description |
+|-------|------|-------------|
+| `trajectory_file` | dropdown | Select from saved files (press R to refresh) |
+| `target_width` | INT | New width (0 = use original) |
+| `target_height` | INT | New height (0 = use original) |
+| `target_frames` | INT | New frame count (0 = use original) |
+| `flip_horizontal` | BOOL | Mirror left/right |
+| `flip_vertical` | BOOL | Mirror top/bottom |
+| `rotate` | dropdown | Rotate 90/180/270 clockwise |
+| `reverse_time` | BOOL | Play path backwards |
+
+**Outputs:**
+| Output | Type | Description |
+|--------|------|-------------|
+| `coordinates` | STRING | Loaded (and optionally transformed) coordinates |
+| `original_width` | INT | Width from saved metadata |
+| `original_height` | INT | Height from saved metadata |
+| `original_frames` | INT | Frame count from saved metadata |
+| `track_count` | INT | Number of tracks in the file |
+
+### Workflow
+
+**Save once:**
+```
+[SplineEditor] → coord_str → [WanTrajectorySaver]
+                                    ↑
+                            filename, width, height
+```
+
+**Reuse many times:**
+```
+[WanTrajectoryLoader] → coordinates → [WanSoundTrajectory] → track_coords → [WanMove]
+        ↑                                     ↑
+   target_frames,                         new audio
+   transforms, etc.
+```
+
+This lets you:
+- Draw paths once, apply different audio later
+- Rescale paths made for 512x512 to 832x480
+- Resample 81-frame paths to 101 frames
+- Flip/rotate paths for variations
+- Reverse paths to play backwards
+- Build a library of reusable camera moves
+
+---
+
+## Trajectory Generator
+
+Generate mathematical motion patterns - no drawing required.
+
+### Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| `oscillate` | Ping-pong back and forth (sine wave motion) |
+| `spiral` | Spiral outward or inward from center |
+| `orbit` | Circular motion around a center point |
+| `diverge` | One origin point, tracks spread outward like explosion |
+| `converge` | Multiple origins all meeting at center point |
+| `random_walk` | Brownian motion / unpredictable drift |
+| `bounce` | Ball bouncing off frame edges |
+| `zoom` | Radial motion toward or away from center |
+| `wave` | Multiple tracks doing synchronized wave motion |
+
+### Inputs
+
+| Input | Type | Description |
+|-------|------|-------------|
+| `pattern` | dropdown | Motion pattern to generate |
+| `num_frames` | INT | Number of frames (match your video length) |
+| `num_tracks` | INT | Number of separate tracks |
+| `width` | INT | Canvas width |
+| `height` | INT | Canvas height |
+| `center_x` | FLOAT | Center X position (0-1 normalized) |
+| `center_y` | FLOAT | Center Y position (0-1 normalized) |
+| `amplitude` | FLOAT | Movement range (0-1 normalized) |
+| `frequency` | FLOAT | Cycles per sequence |
+| `phase_offset` | FLOAT | Starting angle in degrees |
+| `direction` | dropdown | clockwise/counterclockwise/inward/outward/etc |
+| `seed` | INT | Random seed for random_walk and bounce |
+
+### Outputs
+
+| Output | Type | Description |
+|--------|------|-------------|
+| `coordinates` | STRING | Generated trajectory JSON |
+| `width` | INT | Canvas width (passthrough) |
+| `height` | INT | Canvas height (passthrough) |
+| `num_frames` | INT | Frame count (passthrough) |
+
+### Workflow
+
+**Direct to WanMove:**
+```
+[WanTrajectoryGenerator] → coordinates → [WanMove]
+```
+
+**With audio modulation:**
+```
+[WanTrajectoryGenerator] → coordinates → [WanSoundTrajectory] → track_coords → [WanMove]
+                                                ↑
+                                            audio
+```
+
+**Save for later:**
+```
+[WanTrajectoryGenerator] → coordinates → [WanTrajectorySaver]
+```
+
+### Example: Orbiting points with audio wobble
+
+1. Generator: `orbit`, 3 tracks, frequency 2.0
+2. Sound Trajectory: `bass` mode, perpendicular, intensity 50
+3. Result: Points orbit the center while wobbling to the kick drum
+
+### Example: Converging explosion
+
+1. Generator: `diverge`, 5 tracks, amplitude 0.4
+2. Loader: `reverse_time` = True (now it's converging)
+3. Result: Features from edges all collapse to center
+
+---
 
 ## License
 
