@@ -10,7 +10,7 @@ Takes a path from KJNodes SplineEditor (or any compatible coordinate source) and
 
 1. Clone or copy this folder to your ComfyUI `custom_nodes` directory:
    ```
-   ComfyUI/custom_nodes/WanSoundTrajectory/
+   ComfyUI/custom_nodes/ComfyUI-WanSoundTrajectory/
    ```
 
 2. Restart ComfyUI
