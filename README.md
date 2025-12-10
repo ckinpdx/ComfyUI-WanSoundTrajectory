@@ -18,7 +18,7 @@ The result is camera or object movement that can react to music, follow mathemat
 
 1. Clone or copy this folder to your ComfyUI `custom_nodes` directory:
    ```
-   ComfyUI/custom_nodes/WanSoundTrajectory/
+   ComfyUI/custom_nodes/ComfyUI-WanSoundTrajectory/
    ```
 
 2. Restart ComfyUI
@@ -339,7 +339,7 @@ Generate mathematical motion patterns - no drawing required.
 
 Convert DWPose skeleton keypoints to trajectory tracks. Place tracks at body part positions from a single image.
 
-**Requires:** [ComfyUI ControlNet Aux](https://github.com/Fannovel16/comfyui_controlnet_aux) for DWPose Estimator node.
+**Requires:** DWPose Estimator node.
 
 ### Keypoint Selections
 
