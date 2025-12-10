@@ -42,14 +42,14 @@ Connect output to WanVideoAddWanMoveTracks or WanMove_native.
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "audio": ("AUDIO", {"description": "Input audio"}),
-                "coordinates": ("STRING", {"forceInput": True, "description": "Path coordinates from SplineEditor"}),
+                "audio": ("AUDIO", {"tooltip": "Input audio waveform. The node analyzes this to drive path modulation."}),
+                "coordinates": ("STRING", {"forceInput": True, "tooltip": "Path coordinates JSON from SplineEditor, TrajectoryGenerator, or TrajectoryLoader. Format: [{\"x\": n, \"y\": n}, ...]"}),
                 "fps": ("INT", {
                     "default": 30,
                     "min": 1,
                     "max": 120,
                     "step": 1,
-                    "description": "Frames per second for audio alignment"
+                    "tooltip": "Video frame rate. Used to calculate how much audio corresponds to each coordinate point."
                 }),
                 "modulation_mode": ([
                     "envelope",
@@ -59,7 +59,7 @@ Connect output to WanVideoAddWanMoveTracks or WanMove_native.
                     "bass_treble_split",
                 ], {
                     "default": "envelope",
-                    "description": "Which audio feature drives modulation"
+                    "tooltip": "envelope=overall loudness, bass=low frequencies (kicks), treble=high frequencies (hihats), onsets=transient hits"
                 }),
                 "modulation_direction": ([
                     "perpendicular",
@@ -67,14 +67,14 @@ Connect output to WanVideoAddWanMoveTracks or WanMove_native.
                     "along_path",
                 ], {
                     "default": "perpendicular",
-                    "description": "How audio affects the path"
+                    "tooltip": "perpendicular=sideways wobble, radial=breathe in/out from center, along_path=speed variation"
                 }),
                 "intensity": ("FLOAT", {
                     "default": 50.0,
                     "min": 0.0,
                     "max": 500.0,
                     "step": 1.0,
-                    "description": "Strength of modulation in pixels"
+                    "tooltip": "Maximum displacement in pixels. Start low (30-50), increase for more dramatic movement."
                 }),
             },
             "optional": {
@@ -83,30 +83,30 @@ Connect output to WanVideoAddWanMoveTracks or WanMove_native.
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.01,
-                    "description": "Temporal smoothing of audio features"
+                    "tooltip": "Temporal smoothing (0=instant/jittery, 0.3=responsive, 0.7+=smooth/laggy). Prevents harsh movements."
                 }),
                 "normalize": ("BOOLEAN", {
                     "default": True,
-                    "description": "Normalize audio features to 0-1 range"
+                    "tooltip": "Scale audio features to 0-1 range. Keeps consistent modulation regardless of source volume."
                 }),
                 "bidirectional": ("BOOLEAN", {
                     "default": False,
-                    "description": "Allow negative displacement (oscillate around path)"
+                    "tooltip": "OFF=push outward on loud, return on quiet. ON=oscillate around path center (usually better for music)."
                 }),
                 "frequency_split_hz": ("INT", {
                     "default": 200,
                     "min": 50,
                     "max": 2000,
                     "step": 10,
-                    "description": "Frequency cutoff between bass and treble (Hz)"
+                    "tooltip": "Cutoff between bass/treble modes. 150-200 for EDM, 250-300 for rock/acoustic."
                 }),
                 "modulate_static_points": ("BOOLEAN", {
                     "default": True,
-                    "description": "Apply modulation to static/fixed points"
+                    "tooltip": "Apply modulation to fixed/static points. Disable to keep anchor points stable."
                 }),
                 "static_point_axis": (["horizontal", "vertical", "both", "radial_from_center"], {
                     "default": "both",
-                    "description": "Which axis to wobble static points on"
+                    "tooltip": "Direction for static point wobble. radial_from_center pushes toward/away from frame center."
                 }),
             }
         }
@@ -566,11 +566,927 @@ Connect output to WanVideoAddWanMoveTracks or WanMove_native.
         return (output_str,)
 
 
+class WanTrajectorySaver:
+    """
+    Saves trajectory coordinates to a JSON file for later reuse.
+    Stores metadata about original dimensions and frame count.
+    """
+
+    RETURN_TYPES = ()
+    OUTPUT_NODE = True
+    FUNCTION = "save_trajectory"
+    CATEGORY = "WanSoundTrajectory"
+    DESCRIPTION = """
+Saves SplineEditor coordinates to a JSON file for later reuse.
+
+Stores the raw trajectory along with metadata (width, height, frame count, track count)
+so the loader can rescale/resample to different specs.
+
+Files are saved to: ComfyUI-WanSoundTrajectory/saved_trajectories/
+"""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "coordinates": ("STRING", {"forceInput": True, "tooltip": "Trajectory coordinates to save. From SplineEditor, Generator, or any coordinate source."}),
+                "filename": ("STRING", {"default": "my_trajectory", "tooltip": "Name for the saved file (no extension). Will be saved as filename.json"}),
+                "width": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 8, "tooltip": "Canvas width these coordinates were designed for. Used for rescaling on load."}),
+                "height": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 8, "tooltip": "Canvas height these coordinates were designed for. Used for rescaling on load."}),
+            }
+        }
+
+    def save_trajectory(self, coordinates: str, filename: str, width: int, height: int):
+        import os
+        
+        # Parse coordinates to extract metadata
+        try:
+            parsed = json.loads(coordinates.replace("'", '"'))
+            
+            # Handle single track vs multiple tracks
+            if isinstance(parsed[0], dict) and 'x' in parsed[0]:
+                tracks = [parsed]
+            else:
+                tracks = parsed
+            
+            track_count = len(tracks)
+            frame_count = len(tracks[0]) if tracks else 0
+            
+        except (json.JSONDecodeError, IndexError, KeyError) as e:
+            print(f"[WanTrajectorySaver] ERROR: Failed to parse coordinates: {e}")
+            return ()
+        
+        # Build save data with metadata
+        save_data = {
+            "metadata": {
+                "width": width,
+                "height": height,
+                "frames": frame_count,
+                "tracks": track_count
+            },
+            "coordinates": tracks
+        }
+        
+        # Create save directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        save_dir = os.path.join(script_dir, "saved_trajectories")
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Save file
+        filepath = os.path.join(save_dir, f"{filename}.json")
+        with open(filepath, 'w') as f:
+            json.dump(save_data, f, indent=2)
+        
+        print(f"\n{'='*60}")
+        print(f"[WanTrajectorySaver] Saved trajectory to: {filepath}")
+        print(f"[WanTrajectorySaver] Metadata: {width}x{height}, {frame_count} frames, {track_count} tracks")
+        print(f"{'='*60}\n")
+        
+        return ()
+
+
+class WanTrajectoryLoader:
+    """
+    Loads saved trajectory coordinates with optional rescaling and resampling.
+    """
+
+    RETURN_TYPES = ("STRING", "INT", "INT", "INT", "INT")
+    RETURN_NAMES = ("coordinates", "original_width", "original_height", "original_frames", "track_count")
+    FUNCTION = "load_trajectory"
+    CATEGORY = "WanSoundTrajectory"
+    DESCRIPTION = """
+Loads saved trajectory coordinates from JSON files.
+
+Can rescale coordinates to different dimensions and resample to different frame counts.
+If target values match originals (or are set to 0), passes through without modification.
+
+Outputs include original metadata so you can see what was loaded.
+
+Press 'R' to refresh node definitions after saving new trajectories.
+"""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Get list of saved trajectories
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        save_dir = os.path.join(script_dir, "saved_trajectories")
+        
+        if os.path.exists(save_dir):
+            files = [f for f in os.listdir(save_dir) if f.endswith('.json')]
+            files.sort()
+        else:
+            files = []
+        
+        if not files:
+            files = ["no_trajectories_saved"]
+        
+        return {
+            "required": {
+                "trajectory_file": (files, {"tooltip": "Select a saved trajectory file. Press R to refresh list after saving new files."}),
+            },
+            "optional": {
+                "target_width": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 8, "tooltip": "Rescale to this width. 0 = keep original dimensions from saved metadata."}),
+                "target_height": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 8, "tooltip": "Rescale to this height. 0 = keep original dimensions from saved metadata."}),
+                "target_frames": ("INT", {"default": 0, "min": 0, "max": 1000, "step": 1, "tooltip": "Resample to this frame count. 0 = keep original frame count. Uses linear interpolation."}),
+                "flip_horizontal": ("BOOLEAN", {"default": False, "tooltip": "Mirror the trajectory left/right."}),
+                "flip_vertical": ("BOOLEAN", {"default": False, "tooltip": "Mirror the trajectory top/bottom."}),
+                "rotate": (["none", "90", "180", "270"], {"default": "none", "tooltip": "Rotate trajectory clockwise by degrees."}),
+                "reverse_time": ("BOOLEAN", {"default": False, "tooltip": "Reverse the trajectory direction - end becomes start."}),
+            }
+        }
+
+    def _resample_track(self, track: List[Dict], target_frames: int) -> List[Dict]:
+        """Resample a single track to a different frame count using linear interpolation."""
+        if len(track) == target_frames:
+            return track
+        
+        if len(track) == 0:
+            return []
+        
+        if len(track) == 1:
+            # Single point - just repeat it
+            return [{"x": track[0]["x"], "y": track[0]["y"]} for _ in range(target_frames)]
+        
+        resampled = []
+        for i in range(target_frames):
+            # Map target index to source position
+            t = i / (target_frames - 1) if target_frames > 1 else 0
+            src_pos = t * (len(track) - 1)
+            
+            # Get surrounding indices
+            idx_low = int(src_pos)
+            idx_high = min(idx_low + 1, len(track) - 1)
+            
+            # Interpolation factor
+            frac = src_pos - idx_low
+            
+            # Linear interpolation
+            x = track[idx_low]["x"] + frac * (track[idx_high]["x"] - track[idx_low]["x"])
+            y = track[idx_low]["y"] + frac * (track[idx_high]["y"] - track[idx_low]["y"])
+            
+            resampled.append({"x": x, "y": y})
+        
+        return resampled
+
+    def _rescale_track(self, track: List[Dict], orig_width: int, orig_height: int, 
+                       target_width: int, target_height: int) -> List[Dict]:
+        """Rescale track coordinates to different dimensions."""
+        if orig_width == target_width and orig_height == target_height:
+            return track
+        
+        scale_x = target_width / orig_width if orig_width > 0 else 1
+        scale_y = target_height / orig_height if orig_height > 0 else 1
+        
+        return [{"x": p["x"] * scale_x, "y": p["y"] * scale_y} for p in track]
+
+    def _flip_horizontal(self, track: List[Dict], width: int) -> List[Dict]:
+        """Mirror track left/right."""
+        return [{"x": width - p["x"], "y": p["y"]} for p in track]
+
+    def _flip_vertical(self, track: List[Dict], height: int) -> List[Dict]:
+        """Mirror track top/bottom."""
+        return [{"x": p["x"], "y": height - p["y"]} for p in track]
+
+    def _rotate_track(self, track: List[Dict], width: int, height: int, angle: str) -> List[Dict]:
+        """Rotate track clockwise by 90, 180, or 270 degrees."""
+        if angle == "90":
+            return [{"x": height - p["y"], "y": p["x"]} for p in track]
+        elif angle == "180":
+            return [{"x": width - p["x"], "y": height - p["y"]} for p in track]
+        elif angle == "270":
+            return [{"x": p["y"], "y": width - p["x"]} for p in track]
+        return track
+
+    def _reverse_time(self, track: List[Dict]) -> List[Dict]:
+        """Reverse the temporal order of the track."""
+        return track[::-1]
+
+    def load_trajectory(self, trajectory_file: str, target_width: int = 0, 
+                        target_height: int = 0, target_frames: int = 0,
+                        flip_horizontal: bool = False, flip_vertical: bool = False,
+                        rotate: str = "none", reverse_time: bool = False):
+        import os
+        
+        if trajectory_file == "no_trajectories_saved":
+            print("[WanTrajectoryLoader] ERROR: No trajectory files found")
+            return ("[]", 0, 0, 0, 0)
+        
+        # Load file
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        save_dir = os.path.join(script_dir, "saved_trajectories")
+        filepath = os.path.join(save_dir, trajectory_file)
+        
+        try:
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"[WanTrajectoryLoader] ERROR: Failed to load {filepath}: {e}")
+            return ("[]", 0, 0, 0, 0)
+        
+        # Extract metadata and coordinates
+        metadata = data.get("metadata", {})
+        orig_width = metadata.get("width", 512)
+        orig_height = metadata.get("height", 512)
+        orig_frames = metadata.get("frames", 0)
+        track_count = metadata.get("tracks", 0)
+        tracks = data.get("coordinates", [])
+        
+        print(f"\n{'='*60}")
+        print(f"[WanTrajectoryLoader] Loaded: {trajectory_file}")
+        print(f"[WanTrajectoryLoader] Original: {orig_width}x{orig_height}, {orig_frames} frames, {track_count} tracks")
+        
+        # Determine actual targets (0 means use original)
+        actual_width = target_width if target_width > 0 else orig_width
+        actual_height = target_height if target_height > 0 else orig_height
+        actual_frames = target_frames if target_frames > 0 else orig_frames
+        
+        # Track transforms applied
+        transforms_applied = []
+        
+        # Process tracks
+        processed_tracks = []
+        for track in tracks:
+            # Resample if needed
+            if actual_frames != orig_frames:
+                track = self._resample_track(track, actual_frames)
+                if "resampled" not in transforms_applied:
+                    transforms_applied.append("resampled")
+            
+            # Rescale if needed
+            if actual_width != orig_width or actual_height != orig_height:
+                track = self._rescale_track(track, orig_width, orig_height, actual_width, actual_height)
+                if "rescaled" not in transforms_applied:
+                    transforms_applied.append("rescaled")
+            
+            # Apply transforms (use actual dimensions after rescaling)
+            if flip_horizontal:
+                track = self._flip_horizontal(track, actual_width)
+                if "flip_h" not in transforms_applied:
+                    transforms_applied.append("flip_h")
+            
+            if flip_vertical:
+                track = self._flip_vertical(track, actual_height)
+                if "flip_v" not in transforms_applied:
+                    transforms_applied.append("flip_v")
+            
+            if rotate != "none":
+                track = self._rotate_track(track, actual_width, actual_height, rotate)
+                if f"rotate_{rotate}" not in transforms_applied:
+                    transforms_applied.append(f"rotate_{rotate}")
+            
+            if reverse_time:
+                track = self._reverse_time(track)
+                if "reversed" not in transforms_applied:
+                    transforms_applied.append("reversed")
+            
+            # Ensure Python floats for JSON
+            track = [{"x": float(p["x"]), "y": float(p["y"])} for p in track]
+            processed_tracks.append(track)
+        
+        if transforms_applied:
+            print(f"[WanTrajectoryLoader] Transforms: {', '.join(transforms_applied)}")
+        else:
+            print(f"[WanTrajectoryLoader] No transforms applied, passing through")
+        print(f"{'='*60}\n")
+        
+        # Output format - single track or multi-track
+        if len(processed_tracks) == 1:
+            output = processed_tracks[0]
+        else:
+            output = processed_tracks
+        
+        output_str = json.dumps(output)
+        
+        return (output_str, orig_width, orig_height, orig_frames, track_count)
+
+
+class WanTrajectoryGenerator:
+    """
+    Generates mathematical trajectory patterns for WanMove.
+    No drawing required - pure math creates the motion paths.
+    """
+
+    RETURN_TYPES = ("STRING", "INT", "INT", "INT")
+    RETURN_NAMES = ("coordinates", "width", "height", "num_frames")
+    FUNCTION = "generate"
+    CATEGORY = "WanSoundTrajectory"
+    DESCRIPTION = """
+Generates mathematical trajectory patterns for WanMove.
+
+Instead of drawing paths, create them from math:
+- oscillate: ping-pong back and forth
+- spiral: spiral outward/inward
+- orbit: circular motion around center
+- diverge: one point splits into many
+- converge: many points merge to one
+- random_walk: brownian motion drift
+- bounce: ball bouncing off edges
+- zoom: radial motion toward/away from center
+- wave: synchronized wave motion
+
+Output feeds directly to WanMove, WanSoundTrajectory, or WanTrajectorySaver.
+"""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "pattern": ([
+                    "oscillate",
+                    "spiral",
+                    "orbit",
+                    "diverge",
+                    "converge",
+                    "random_walk",
+                    "bounce",
+                    "zoom",
+                    "wave",
+                ], {"default": "oscillate", "tooltip": "oscillate=bounce, spiral=spin in/out, orbit=circle, diverge=explode, converge=implode, bounce=ball physics, zoom=radial"}),
+                "num_frames": ("INT", {"default": 81, "min": 2, "max": 1000, "step": 1, "tooltip": "Total frames. Should match your video length. Must be valid WanMove count (81, 101, etc)."}),
+                "num_tracks": ("INT", {"default": 1, "min": 1, "max": 20, "step": 1, "tooltip": "Number of separate track points. 1=single path, multiple=complex patterns."}),
+                "width": ("INT", {"default": 832, "min": 64, "max": 4096, "step": 8, "tooltip": "Canvas width in pixels. Should match your output resolution."}),
+                "height": ("INT", {"default": 480, "min": 64, "max": 4096, "step": 8, "tooltip": "Canvas height in pixels. Should match your output resolution."}),
+            },
+            "optional": {
+                "center_x": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Center X position (0=left, 0.5=middle, 1=right). Origin point for most patterns."}),
+                "center_y": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Center Y position (0=top, 0.5=middle, 1=bottom). Origin point for most patterns."}),
+                "amplitude": ("FLOAT", {"default": 0.3, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Movement range as fraction of canvas. 0.3 = 30% of canvas dimension."}),
+                "frequency": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1, "tooltip": "Cycles per video. 1.0=one complete cycle, 2.0=two cycles, 0.5=half cycle."}),
+                "phase_offset": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 360.0, "step": 1.0, "tooltip": "Starting angle in degrees. Offsets where motion begins in the cycle."}),
+                "direction": (["clockwise", "counterclockwise", "outward", "inward", "horizontal", "vertical", "diagonal"], 
+                             {"default": "clockwise", "tooltip": "Movement direction. Available options depend on pattern type."}),
+                "seed": ("INT", {"default": 42, "min": 0, "max": 0xffffffff, "step": 1, "tooltip": "Random seed for random_walk and bounce patterns. Same seed = same path."}),
+            }
+        }
+
+    def _oscillate(self, num_frames: int, num_tracks: int, width: int, height: int,
+                   center_x: float, center_y: float, amplitude: float, frequency: float,
+                   phase_offset: float, direction: str, **kwargs) -> List[List[Dict]]:
+        """Ping-pong oscillation pattern."""
+        tracks = []
+        cx, cy = center_x * width, center_y * height
+        amp_x = amplitude * width
+        amp_y = amplitude * height
+        
+        for t in range(num_tracks):
+            track = []
+            track_phase = phase_offset + (t * 360 / num_tracks)
+            
+            for f in range(num_frames):
+                progress = f / max(num_frames - 1, 1)
+                angle = math.radians(track_phase) + progress * frequency * 2 * math.pi
+                
+                if direction == "horizontal":
+                    x = cx + math.sin(angle) * amp_x
+                    y = cy
+                elif direction == "vertical":
+                    x = cx
+                    y = cy + math.sin(angle) * amp_y
+                else:  # diagonal
+                    x = cx + math.sin(angle) * amp_x
+                    y = cy + math.sin(angle) * amp_y
+                
+                track.append({"x": x, "y": y})
+            tracks.append(track)
+        
+        return tracks
+
+    def _spiral(self, num_frames: int, num_tracks: int, width: int, height: int,
+                center_x: float, center_y: float, amplitude: float, frequency: float,
+                phase_offset: float, direction: str, **kwargs) -> List[List[Dict]]:
+        """Spiral pattern - outward or inward."""
+        tracks = []
+        cx, cy = center_x * width, center_y * height
+        max_radius = amplitude * min(width, height)
+        
+        for t in range(num_tracks):
+            track = []
+            track_phase = phase_offset + (t * 360 / num_tracks)
+            
+            for f in range(num_frames):
+                progress = f / max(num_frames - 1, 1)
+                angle = math.radians(track_phase) + progress * frequency * 2 * math.pi
+                
+                if direction == "inward":
+                    radius = max_radius * (1 - progress)
+                else:  # outward
+                    radius = max_radius * progress
+                
+                x = cx + math.cos(angle) * radius
+                y = cy + math.sin(angle) * radius
+                
+                track.append({"x": x, "y": y})
+            tracks.append(track)
+        
+        return tracks
+
+    def _orbit(self, num_frames: int, num_tracks: int, width: int, height: int,
+               center_x: float, center_y: float, amplitude: float, frequency: float,
+               phase_offset: float, direction: str, **kwargs) -> List[List[Dict]]:
+        """Circular orbit pattern."""
+        tracks = []
+        cx, cy = center_x * width, center_y * height
+        radius = amplitude * min(width, height)
+        
+        direction_mult = -1 if direction == "counterclockwise" else 1
+        
+        for t in range(num_tracks):
+            track = []
+            track_phase = phase_offset + (t * 360 / num_tracks)
+            
+            for f in range(num_frames):
+                progress = f / max(num_frames - 1, 1)
+                angle = math.radians(track_phase) + direction_mult * progress * frequency * 2 * math.pi
+                
+                x = cx + math.cos(angle) * radius
+                y = cy + math.sin(angle) * radius
+                
+                track.append({"x": x, "y": y})
+            tracks.append(track)
+        
+        return tracks
+
+    def _diverge(self, num_frames: int, num_tracks: int, width: int, height: int,
+                 center_x: float, center_y: float, amplitude: float, frequency: float,
+                 phase_offset: float, direction: str, **kwargs) -> List[List[Dict]]:
+        """One origin point, tracks spread outward."""
+        tracks = []
+        cx, cy = center_x * width, center_y * height
+        max_radius = amplitude * min(width, height)
+        
+        for t in range(num_tracks):
+            track = []
+            angle = math.radians(phase_offset + (t * 360 / num_tracks))
+            
+            for f in range(num_frames):
+                progress = f / max(num_frames - 1, 1)
+                radius = max_radius * progress
+                
+                x = cx + math.cos(angle) * radius
+                y = cy + math.sin(angle) * radius
+                
+                track.append({"x": x, "y": y})
+            tracks.append(track)
+        
+        return tracks
+
+    def _converge(self, num_frames: int, num_tracks: int, width: int, height: int,
+                  center_x: float, center_y: float, amplitude: float, frequency: float,
+                  phase_offset: float, direction: str, **kwargs) -> List[List[Dict]]:
+        """Multiple origins converging to center."""
+        tracks = []
+        cx, cy = center_x * width, center_y * height
+        max_radius = amplitude * min(width, height)
+        
+        for t in range(num_tracks):
+            track = []
+            angle = math.radians(phase_offset + (t * 360 / num_tracks))
+            
+            for f in range(num_frames):
+                progress = f / max(num_frames - 1, 1)
+                radius = max_radius * (1 - progress)
+                
+                x = cx + math.cos(angle) * radius
+                y = cy + math.sin(angle) * radius
+                
+                track.append({"x": x, "y": y})
+            tracks.append(track)
+        
+        return tracks
+
+    def _random_walk(self, num_frames: int, num_tracks: int, width: int, height: int,
+                     center_x: float, center_y: float, amplitude: float, frequency: float,
+                     phase_offset: float, direction: str, seed: int = 42, **kwargs) -> List[List[Dict]]:
+        """Brownian motion / random walk."""
+        np.random.seed(seed)
+        tracks = []
+        step_size = amplitude * min(width, height) * 0.1
+        
+        for t in range(num_tracks):
+            track = []
+            # Start positions spread around center
+            angle = math.radians(phase_offset + (t * 360 / num_tracks))
+            start_offset = amplitude * min(width, height) * 0.3
+            x = center_x * width + math.cos(angle) * start_offset
+            y = center_y * height + math.sin(angle) * start_offset
+            
+            for f in range(num_frames):
+                track.append({"x": x, "y": y})
+                # Random step
+                x += np.random.uniform(-step_size, step_size)
+                y += np.random.uniform(-step_size, step_size)
+                # Clamp to bounds
+                x = max(0, min(width, x))
+                y = max(0, min(height, y))
+            
+            tracks.append(track)
+        
+        return tracks
+
+    def _bounce(self, num_frames: int, num_tracks: int, width: int, height: int,
+                center_x: float, center_y: float, amplitude: float, frequency: float,
+                phase_offset: float, direction: str, seed: int = 42, **kwargs) -> List[List[Dict]]:
+        """Ball bouncing off edges."""
+        np.random.seed(seed)
+        tracks = []
+        speed = amplitude * min(width, height) * 0.05 * frequency
+        
+        for t in range(num_tracks):
+            track = []
+            # Start at center with random velocity
+            x = center_x * width
+            y = center_y * height
+            angle = math.radians(phase_offset + (t * 360 / num_tracks))
+            vx = math.cos(angle) * speed
+            vy = math.sin(angle) * speed
+            
+            margin = 10
+            
+            for f in range(num_frames):
+                track.append({"x": x, "y": y})
+                x += vx
+                y += vy
+                
+                # Bounce off edges
+                if x <= margin or x >= width - margin:
+                    vx = -vx
+                    x = max(margin, min(width - margin, x))
+                if y <= margin or y >= height - margin:
+                    vy = -vy
+                    y = max(margin, min(height - margin, y))
+            
+            tracks.append(track)
+        
+        return tracks
+
+    def _zoom(self, num_frames: int, num_tracks: int, width: int, height: int,
+              center_x: float, center_y: float, amplitude: float, frequency: float,
+              phase_offset: float, direction: str, **kwargs) -> List[List[Dict]]:
+        """Radial zoom - toward or away from center."""
+        tracks = []
+        cx, cy = center_x * width, center_y * height
+        
+        for t in range(num_tracks):
+            track = []
+            # Start position at edge
+            angle = math.radians(phase_offset + (t * 360 / num_tracks))
+            start_radius = amplitude * min(width, height)
+            
+            for f in range(num_frames):
+                progress = f / max(num_frames - 1, 1)
+                
+                if direction == "inward":
+                    radius = start_radius * (1 - progress)
+                else:  # outward
+                    radius = start_radius * progress
+                
+                x = cx + math.cos(angle) * radius
+                y = cy + math.sin(angle) * radius
+                
+                track.append({"x": x, "y": y})
+            tracks.append(track)
+        
+        return tracks
+
+    def _wave(self, num_frames: int, num_tracks: int, width: int, height: int,
+              center_x: float, center_y: float, amplitude: float, frequency: float,
+              phase_offset: float, direction: str, **kwargs) -> List[List[Dict]]:
+        """Wave pattern - tracks in a line doing synchronized wave."""
+        tracks = []
+        amp = amplitude * height * 0.5
+        
+        for t in range(num_tracks):
+            track = []
+            # Space tracks horizontally
+            base_x = width * (t + 1) / (num_tracks + 1)
+            base_y = center_y * height
+            
+            for f in range(num_frames):
+                progress = f / max(num_frames - 1, 1)
+                # Phase offset based on track position for wave effect
+                wave_phase = phase_offset + (t * 45)
+                angle = math.radians(wave_phase) + progress * frequency * 2 * math.pi
+                
+                if direction == "horizontal":
+                    x = base_x + math.sin(angle) * amp
+                    y = base_y
+                else:  # vertical
+                    x = base_x
+                    y = base_y + math.sin(angle) * amp
+                
+                track.append({"x": x, "y": y})
+            tracks.append(track)
+        
+        return tracks
+
+    def generate(self, pattern: str, num_frames: int, num_tracks: int, width: int, height: int,
+                 center_x: float = 0.5, center_y: float = 0.5, amplitude: float = 0.3,
+                 frequency: float = 1.0, phase_offset: float = 0.0, direction: str = "clockwise",
+                 seed: int = 42) -> Tuple[str, int, int, int]:
+        """Generate trajectory pattern."""
+        
+        print(f"\n{'='*60}")
+        print(f"[WanTrajectoryGenerator] Generating pattern: {pattern}")
+        print(f"[WanTrajectoryGenerator] {num_tracks} tracks, {num_frames} frames, {width}x{height}")
+        print(f"{'='*60}\n")
+        
+        # Get the pattern generator method
+        generators = {
+            "oscillate": self._oscillate,
+            "spiral": self._spiral,
+            "orbit": self._orbit,
+            "diverge": self._diverge,
+            "converge": self._converge,
+            "random_walk": self._random_walk,
+            "bounce": self._bounce,
+            "zoom": self._zoom,
+            "wave": self._wave,
+        }
+        
+        generator = generators.get(pattern, self._oscillate)
+        
+        tracks = generator(
+            num_frames=num_frames,
+            num_tracks=num_tracks,
+            width=width,
+            height=height,
+            center_x=center_x,
+            center_y=center_y,
+            amplitude=amplitude,
+            frequency=frequency,
+            phase_offset=phase_offset,
+            direction=direction,
+            seed=seed,
+        )
+        
+        # Ensure all values are Python floats for JSON
+        for track in tracks:
+            for point in track:
+                point["x"] = float(point["x"])
+                point["y"] = float(point["y"])
+        
+        # Output format
+        if len(tracks) == 1:
+            output = tracks[0]
+        else:
+            output = tracks
+        
+        output_str = json.dumps(output)
+        
+        print(f"[WanTrajectoryGenerator] Generated {len(tracks)} tracks with {num_frames} points each")
+        
+        return (output_str, width, height, num_frames)
+
+
+class WanPoseToTracks:
+    """
+    Converts DWPose skeleton keypoints to WanMove trajectory tracks.
+    Places tracks at body part positions from a single image.
+    """
+
+    RETURN_TYPES = ("STRING", "INT", "INT")
+    RETURN_NAMES = ("coordinates", "width", "height")
+    FUNCTION = "convert"
+    CATEGORY = "WanSoundTrajectory"
+    DESCRIPTION = """
+Converts DWPose body keypoints to WanMove trajectory tracks.
+
+Takes pose data from a single image and creates static tracks at body part positions.
+These can then be animated with WanTrajectoryGenerator patterns or WanSoundTrajectory audio modulation.
+
+Keypoint selections:
+- head: nose position
+- shoulders: left + right shoulder
+- elbows: left + right elbow
+- wrists: left + right wrist
+- hips: left + right hip
+- knees: left + right knee
+- ankles: left + right ankle
+- upper_body: shoulders, elbows, wrists
+- lower_body: hips, knees, ankles
+- torso: shoulders, hips
+- limbs: wrists, ankles
+- all: all detected body points
+
+Can append to existing coordinates to combine with generator patterns.
+"""
+
+    # COCO body keypoint indices
+    KEYPOINT_MAP = {
+        "nose": [0],
+        "neck": [1],
+        "shoulders": [2, 5],  # right, left
+        "elbows": [3, 6],
+        "wrists": [4, 7],
+        "hips": [8, 11],
+        "knees": [9, 12],
+        "ankles": [10, 13],
+        "eyes": [14, 15],
+        "ears": [16, 17],
+        "head": [0],  # just nose
+        "upper_body": [2, 5, 3, 6, 4, 7],  # shoulders, elbows, wrists
+        "lower_body": [8, 11, 9, 12, 10, 13],  # hips, knees, ankles
+        "torso": [2, 5, 8, 11],  # shoulders + hips
+        "limbs": [4, 7, 10, 13],  # wrists + ankles
+        "all": list(range(18)),
+    }
+
+    KEYPOINT_NAMES = [
+        "nose", "neck", 
+        "right_shoulder", "right_elbow", "right_wrist",
+        "left_shoulder", "left_elbow", "left_wrist",
+        "right_hip", "right_knee", "right_ankle",
+        "left_hip", "left_knee", "left_ankle",
+        "right_eye", "left_eye", "right_ear", "left_ear"
+    ]
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "pose_keypoint": ("POSE_KEYPOINT", {"tooltip": "Pose data from DWPose Estimator. Connect the POSE_KEYPOINT output."}),
+                "keypoint_selection": ([
+                    "head",
+                    "shoulders", 
+                    "elbows",
+                    "wrists",
+                    "hips",
+                    "knees",
+                    "ankles",
+                    "upper_body",
+                    "lower_body",
+                    "torso",
+                    "limbs",
+                    "all",
+                ], {"default": "wrists", "tooltip": "Which body parts become tracks. wrists=hands, limbs=hands+feet, torso=shoulders+hips, all=every point."}),
+                "num_frames": ("INT", {"default": 81, "min": 1, "max": 1000, "step": 1, "tooltip": "Frame count. Since pose is from single image, positions repeat for all frames."}),
+                "target_width": ("INT", {"default": 832, "min": 64, "max": 4096, "step": 8, "tooltip": "Output width. Coordinates are scaled from pose canvas to this resolution."}),
+                "target_height": ("INT", {"default": 480, "min": 64, "max": 4096, "step": 8, "tooltip": "Output height. Coordinates are scaled from pose canvas to this resolution."}),
+            },
+            "optional": {
+                "existing_coordinates": ("STRING", {"forceInput": True, "tooltip": "Append pose tracks to existing coordinates. Useful for combining with Generator patterns."}),
+                "min_confidence": ("FLOAT", {"default": 0.3, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "Skip keypoints below this confidence. 0.3=include most, 0.7=only confident detections."}),
+            }
+        }
+
+    def convert(self, pose_keypoint, keypoint_selection: str, num_frames: int,
+                target_width: int, target_height: int,
+                existing_coordinates: str = None, min_confidence: float = 0.3):
+        
+        print(f"\n{'='*60}")
+        print(f"[WanPoseToTracks] Converting pose to tracks")
+        print(f"[WanPoseToTracks] Selection: {keypoint_selection}, Frames: {num_frames}")
+        print(f"{'='*60}\n")
+
+        # Parse pose data
+        if isinstance(pose_keypoint, str):
+            pose_data = json.loads(pose_keypoint)
+        elif isinstance(pose_keypoint, list):
+            pose_data = pose_keypoint
+        else:
+            print(f"[WanPoseToTracks] ERROR: Unexpected pose_keypoint type: {type(pose_keypoint)}")
+            return ("[]", target_width, target_height)
+
+        # Get first frame's data
+        if len(pose_data) == 0:
+            print("[WanPoseToTracks] ERROR: Empty pose data")
+            return ("[]", target_width, target_height)
+
+        frame_data = pose_data[0]
+        canvas_width = frame_data.get("canvas_width", target_width)
+        canvas_height = frame_data.get("canvas_height", target_height)
+        
+        # Scale factors
+        scale_x = target_width / canvas_width
+        scale_y = target_height / canvas_height
+
+        # Get people
+        people = frame_data.get("people", [])
+        if len(people) == 0:
+            print("[WanPoseToTracks] ERROR: No people detected in pose")
+            return ("[]", target_width, target_height)
+
+        # Use first person
+        person = people[0]
+        body_keypoints = person.get("pose_keypoints_2d", [])
+
+        if len(body_keypoints) == 0:
+            print("[WanPoseToTracks] ERROR: No body keypoints found")
+            return ("[]", target_width, target_height)
+
+        # Parse keypoints (x, y, confidence triplets)
+        keypoints = []
+        for i in range(0, len(body_keypoints), 3):
+            if i + 2 < len(body_keypoints):
+                x = body_keypoints[i]
+                y = body_keypoints[i + 1]
+                conf = body_keypoints[i + 2]
+                keypoints.append({"x": x, "y": y, "confidence": conf})
+
+        print(f"[WanPoseToTracks] Parsed {len(keypoints)} body keypoints")
+
+        # Get indices for selection
+        indices = self.KEYPOINT_MAP.get(keypoint_selection, [0])
+        
+        # Build tracks
+        new_tracks = []
+        for idx in indices:
+            if idx >= len(keypoints):
+                continue
+            
+            kp = keypoints[idx]
+            
+            # Skip low confidence or zero position (not detected)
+            if kp["confidence"] < min_confidence or (kp["x"] == 0 and kp["y"] == 0):
+                print(f"[WanPoseToTracks] Skipping {self.KEYPOINT_NAMES[idx]}: low confidence or not detected")
+                continue
+
+            # Scale to target dimensions
+            x = kp["x"] * scale_x
+            y = kp["y"] * scale_y
+
+            # Create static track (same position repeated for all frames)
+            track = [{"x": float(x), "y": float(y)} for _ in range(num_frames)]
+            new_tracks.append(track)
+            
+            print(f"[WanPoseToTracks] Added track for {self.KEYPOINT_NAMES[idx]}: ({x:.1f}, {y:.1f})")
+
+        # Handle existing coordinates
+        if existing_coordinates and existing_coordinates.strip():
+            try:
+                parsed_existing = json.loads(existing_coordinates.replace("'", '"'))
+                
+                # Normalize to list of tracks
+                if isinstance(parsed_existing[0], dict) and 'x' in parsed_existing[0]:
+                    existing_tracks = [parsed_existing]
+                else:
+                    existing_tracks = parsed_existing
+                
+                # Check frame count matches
+                if existing_tracks and len(existing_tracks[0]) != num_frames:
+                    print(f"[WanPoseToTracks] WARNING: Existing tracks have {len(existing_tracks[0])} frames, resampling to {num_frames}")
+                    # Resample existing tracks
+                    resampled = []
+                    for track in existing_tracks:
+                        if len(track) == num_frames:
+                            resampled.append(track)
+                        else:
+                            # Simple linear resample
+                            new_track = []
+                            for i in range(num_frames):
+                                t = i / max(num_frames - 1, 1)
+                                src_pos = t * (len(track) - 1)
+                                idx_low = int(src_pos)
+                                idx_high = min(idx_low + 1, len(track) - 1)
+                                frac = src_pos - idx_low
+                                x = track[idx_low]["x"] + frac * (track[idx_high]["x"] - track[idx_low]["x"])
+                                y = track[idx_low]["y"] + frac * (track[idx_high]["y"] - track[idx_low]["y"])
+                                new_track.append({"x": float(x), "y": float(y)})
+                            resampled.append(new_track)
+                    existing_tracks = resampled
+
+                # Combine
+                all_tracks = existing_tracks + new_tracks
+                print(f"[WanPoseToTracks] Combined {len(existing_tracks)} existing + {len(new_tracks)} new = {len(all_tracks)} total tracks")
+            except (json.JSONDecodeError, IndexError, KeyError) as e:
+                print(f"[WanPoseToTracks] WARNING: Could not parse existing coordinates: {e}")
+                all_tracks = new_tracks
+        else:
+            all_tracks = new_tracks
+
+        if len(all_tracks) == 0:
+            print("[WanPoseToTracks] WARNING: No valid tracks created")
+            return ("[]", target_width, target_height)
+
+        # Output format
+        if len(all_tracks) == 1:
+            output = all_tracks[0]
+        else:
+            output = all_tracks
+
+        output_str = json.dumps(output)
+
+        print(f"\n{'='*60}")
+        print(f"[WanPoseToTracks] Created {len(all_tracks)} tracks with {num_frames} frames each")
+        print(f"{'='*60}\n")
+
+        return (output_str, target_width, target_height)
+
+
 # ComfyUI registration
 NODE_CLASS_MAPPINGS = {
     "WanSoundTrajectory": WanSoundTrajectory,
+    "WanTrajectorySaver": WanTrajectorySaver,
+    "WanTrajectoryLoader": WanTrajectoryLoader,
+    "WanTrajectoryGenerator": WanTrajectoryGenerator,
+    "WanPoseToTracks": WanPoseToTracks,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "WanSoundTrajectory": "Wan Sound Trajectory",
+    "WanTrajectorySaver": "Wan Trajectory Saver",
+    "WanTrajectoryLoader": "Wan Trajectory Loader",
+    "WanTrajectoryGenerator": "Wan Trajectory Generator",
+    "WanPoseToTracks": "Wan Pose To Tracks",
 }
