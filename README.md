@@ -22,14 +22,14 @@ The result is camera or object movement that can react to music, follow mathemat
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/ckinpdx/WanSoundTrajectory.git
+git clone https://github.com/ckinpdx/ComfyUI-WanSoundTrajectory.git
 ```
 
 ### Manual
 
 Clone or copy this folder to your ComfyUI `custom_nodes` directory:
 ```
-ComfyUI/custom_nodes/WanSoundTrajectory/
+ComfyUI/custom_nodes/ComfyUI-WanSoundTrajectory/
 ```
 
 Restart ComfyUI after installation.
