@@ -1545,7 +1545,7 @@ class WanMove3DZoom:
                 "x_rotation": ("FLOAT", {"default": 0.0, "min": -360.0, "max": 360.0, "step": 1.0, "tooltip": "Vertical orbit - tilt up/down around subject"}),
                 "y_rotation": ("FLOAT", {"default": 30.0, "min": -360.0, "max": 360.0, "step": 1.0, "tooltip": "Horizontal orbit - circle left/right around subject"}),
                 "z_rotation": ("FLOAT", {"default": 0.0, "min": -360.0, "max": 360.0, "step": 1.0, "tooltip": "Roll - tilt horizon"}),
-                "zoom_amount": ("FLOAT", {"default": 0.0, "min": -0.8, "max": 2.0, "step": 0.05, "tooltip": "Zoom intensity - positive=zoom in, negative=zoom out, 0=no zoom"}),
+                "zoom_amount": ("FLOAT", {"default": 0.0, "min": -2.0, "max": 2.0, "step": 0.05, "tooltip": "Zoom intensity - positive=zoom in, negative=zoom out, 0=no zoom"}),
                 "trajectory": (["Constant", "Ease In", "Ease Out", "Ease In Out"],),
                 "point_radius": ("INT", {"default": 5, "min": 1, "max": 20, "step": 1, "tooltip": "Preview dot size - doesn't affect output"}),
                 "export_width": ("INT", {"default": 512, "min": 64, "max": 4096, "tooltip": "Output coordinate space width"}),
