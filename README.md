@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/24087910/README.md)
+[README.md](https://github.com/user-attachments/files/24219534/README.md)
 # WanSoundTrajectory
 
 Audio-driven path modulation and trajectory generation for WanMove video generation.
@@ -11,19 +11,30 @@ A suite of nodes for creating and manipulating WanMove trajectories:
 2. **WanTrajectoryGenerator** - Creates mathematical motion patterns (orbit, spiral, bounce, etc.)
 3. **WanTrajectorySaver** - Saves trajectories for reuse
 4. **WanTrajectoryLoader** - Loads saved trajectories with transforms (flip, rotate, rescale)
+5. **WanPoseToTracks** - Converts DWPose skeleton keypoints to trajectory tracks
+6. **WanMove3DZoom** - Creates 3D point clouds from depth maps with rotation, zoom, and background isolation
 
 The result is camera or object movement that can react to music, follow mathematical patterns, or both.
 
 ## Installation
 
-1. Clone or copy this folder to your ComfyUI `custom_nodes` directory:
-   ```
-   ComfyUI/custom_nodes/ComfyUI-WanSoundTrajectory/
-   ```
+### From GitHub
 
-2. Restart ComfyUI
+```bash
+cd ComfyUI/custom_nodes
+git clone https://github.com/ckinpdx/WanSoundTrajectory.git
+```
 
-No additional dependencies beyond numpy (already required by ComfyUI).
+### Manual
+
+Clone or copy this folder to your ComfyUI `custom_nodes` directory:
+```
+ComfyUI/custom_nodes/WanSoundTrajectory/
+```
+
+Restart ComfyUI after installation.
+
+No additional dependencies beyond numpy and cv2 (already required by ComfyUI).
 
 ## Usage
 
@@ -101,7 +112,7 @@ Controls how the 0-1 audio values map to displacement:
 - Audio value 1.0 → full positive displacement
 - Path oscillates *around* the original trajectory
 
-Use bidirectional when you want symmetrical wobble. Leave it off when you want the path to "punch out" on beats and return to center.
+Use bidirectional when you want symmetrical wobble. Leave it off when you specifically want "punch out and return" behavior.
 
 #### normalize
 When enabled (default), audio features are scaled so the quietest moment = 0 and loudest = 1. This means:
@@ -133,8 +144,11 @@ When a static point IS modulated, this controls which direction it wobbles:
 - **vertical**: Up/down movement only  
 - **both** (default): Diagonal movement (45°)
 - **radial_from_center**: Push toward/away from frame center (512, 512)
+- **local_orbit**: Each point jitters in a small circle around its own home position
 
 The `radial_from_center` option is useful for breathing/pulsing effects where you want the point to expand outward from the middle of the frame.
+
+The `local_orbit` option is specifically designed for use with WanMove3DZoom - each point orbits around its own original position rather than being pushed toward a global center. This creates natural-looking parallax motion where background points stay in the background but wobble in place to the audio.
 
 ### Output
 
@@ -185,6 +199,86 @@ The `radial_from_center` option is useful for breathing/pulsing effects where yo
 
 - **Input**: Any node that outputs SplineEditor-compatible coordinate JSON
 - **Output**: WanVideoAddWanMoveTracks, WanMove_native, or any node expecting the same format
+
+---
+
+## WanMove3DZoom
+
+Creates 3D point clouds from depth maps with camera rotation, zoom animation, and background/foreground isolation.
+
+### What it does
+
+Takes a depth map and generates tracking points in 3D space. The points can be animated with rotation and zoom, then output as coordinates for WanMove. Combined with WanSoundTrajectory's `local_orbit` mode, you can create audio-reactive parallax effects where background points jitter to the beat while staying in place.
+
+### Inputs
+
+| Input | Type | Description |
+|-------|------|-------------|
+| `images` | IMAGE | Depth map (grayscale - white=near, black=far) |
+| `num_points` | INT | Number of tracking points to generate (grid distribution) |
+| `depth_scale` | INT | Z-axis range in pixels - separation between near and far |
+| `depth_falloff` | FLOAT | Depth curve (0.1=near focus, 0.5=linear, 1.0=far focus) |
+| `depth_min` | FLOAT | Minimum depth to include (0=far/black) |
+| `depth_max` | FLOAT | Maximum depth to include (1=near/white) |
+| `duration` | INT | Number of frames to generate |
+| `x_rotation` | FLOAT | Tilt up/down (degrees) |
+| `y_rotation` | FLOAT | Orbit left/right (degrees) |
+| `z_rotation` | FLOAT | Roll/tilt horizon (degrees) |
+| `zoom_amount` | FLOAT | Zoom intensity (positive=in, negative=out, 0=none) |
+| `trajectory` | dropdown | Easing curve (Constant, Ease In, Ease Out, Ease In Out) |
+| `point_radius` | INT | Preview dot size |
+| `export_width` | INT | Output coordinate space width |
+| `export_height` | INT | Output coordinate space height |
+| `mask` | IMAGE | Optional - white=include, black=exclude points |
+
+### Outputs
+
+| Output | Type | Description |
+|--------|------|-------------|
+| `preview_images` | IMAGE | Animated preview of the 3D points |
+| `coord_tracks` | STRING | Trajectory JSON for WanMove |
+
+### Background Isolation
+
+Use `depth_min` and `depth_max` to select only background points:
+
+- **Background only**: `depth_min=0.0`, `depth_max=0.3` (selects dark/far areas)
+- **Foreground only**: `depth_min=0.7`, `depth_max=1.0` (selects bright/near areas)
+- **Mid-ground**: `depth_min=0.3`, `depth_max=0.7`
+
+Alternatively, provide a **mask** image where white areas include points and black areas exclude them. This is more flexible for complex scenes where depth alone doesn't cleanly separate subject from background.
+
+### Workflow
+
+**Basic 3D zoom:**
+```
+[Depth Map] → [WanMove3DZoom] → coord_tracks → [WanMove]
+```
+
+**Audio-reactive background parallax:**
+```
+[Depth Map] → [WanMove3DZoom] → coord_tracks → [WanSoundTrajectory] → track_coords → [WanMove]
+     ↑              ↑                                    ↑
+   depth       depth_min/max                        local_orbit mode
+               for background                         + audio
+```
+
+**With mask for subject isolation:**
+```
+[Image] → [SAM/GroundingDINO] → mask ──┐
+                                       ↓
+[Depth Map] ────────────────► [WanMove3DZoom] → coord_tracks
+```
+
+### Tips
+
+1. **Use local_orbit**: When feeding WanMove3DZoom output to WanSoundTrajectory, use `static_point_axis=local_orbit` so points jitter around their home positions instead of pulling toward frame center.
+
+2. **Preview first**: The node outputs preview frames showing the animated 3D points. Check this before running the full generation.
+
+3. **Depth map quality matters**: Better depth estimation = better 3D separation. Consider using high-quality depth models.
+
+4. **Combine zoom with rotation**: Small amounts of both (e.g., zoom=0.1, y_rotation=15) creates natural-feeling camera movement.
 
 ---
 
@@ -339,7 +433,7 @@ Generate mathematical motion patterns - no drawing required.
 
 Convert DWPose skeleton keypoints to trajectory tracks. Place tracks at body part positions from a single image.
 
-**Requires:** DWPose Estimator node.
+**Requires:** [ComfyUI ControlNet Aux](https://github.com/Fannovel16/comfyui_controlnet_aux) for DWPose Estimator node.
 
 ### Keypoint Selections
 
