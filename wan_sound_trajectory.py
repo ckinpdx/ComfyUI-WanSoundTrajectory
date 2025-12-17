@@ -7,6 +7,8 @@ import torch
 import numpy as np
 import json
 import math
+import gc
+import cv2
 from typing import Dict, Any, Tuple, List
 
 
@@ -104,9 +106,9 @@ Connect output to WanVideoAddWanMoveTracks or WanMove_native.
                     "default": True,
                     "tooltip": "Apply modulation to fixed/static points. Disable to keep anchor points stable."
                 }),
-                "static_point_axis": (["horizontal", "vertical", "both", "radial_from_center"], {
+                "static_point_axis": (["horizontal", "vertical", "both", "radial_from_center", "local_orbit"], {
                     "default": "both",
-                    "tooltip": "Direction for static point wobble. radial_from_center pushes toward/away from frame center."
+                    "tooltip": "Direction for static point wobble. radial_from_center pushes toward/away from frame center. local_orbit makes each point jitter around its own home position."
                 }),
             }
         }
@@ -389,6 +391,11 @@ Connect output to WanVideoAddWanMoveTracks or WanMove_native.
         try:
             parsed = json.loads(coordinates.replace("'", '"'))
             
+            # Handle empty input
+            if not parsed or len(parsed) == 0:
+                print(f"[WanSoundTrajectory] ERROR: Empty coordinates received")
+                return (coordinates,)
+            
             # Handle single track vs multiple tracks
             if isinstance(parsed[0], dict) and 'x' in parsed[0]:
                 # Single track
@@ -420,6 +427,9 @@ Connect output to WanVideoAddWanMoveTracks or WanMove_native.
 
         # Process each track
         modulated_tracks = []
+        
+        # Generate per-point random angles for local_orbit mode (seeded for consistency)
+        np.random.seed(42)
         
         for track_idx, track in enumerate(tracks):
             num_frames = len(track)
@@ -471,6 +481,17 @@ Connect output to WanVideoAddWanMoveTracks or WanMove_native.
                 frame_center_x = 512  # Default assumption
                 frame_center_y = 512
             
+            # For local_orbit mode, generate a consistent random angle for this track
+            if is_static and static_point_axis == "local_orbit":
+                # Use track index to seed unique but consistent angle per track
+                orbit_base_angle = (track_idx * 137.5) % 360  # Golden angle distribution
+                orbit_speed = 2.0  # Rotations over the duration
+            
+            # Store home position for local_orbit
+            if is_static and len(track) > 0:
+                home_x = track[0]['x']
+                home_y = track[0]['y']
+            
             for i, point in enumerate(track):
                 x, y = point['x'], point['y']
                 
@@ -510,6 +531,20 @@ Connect output to WanVideoAddWanMoveTracks or WanMove_native.
                             rx, ry = 1, 0  # Default direction if at center
                         dx = rx * mod * intensity
                         dy = ry * mod * intensity
+                    elif static_point_axis == "local_orbit":
+                        # Jitter/orbit around home position
+                        # The angle changes over time, amplitude controlled by audio
+                        progress = i / max(num_frames - 1, 1)
+                        orbit_angle = math.radians(orbit_base_angle + progress * 360 * orbit_speed)
+                        
+                        # Displacement is a circle around home, radius scaled by audio
+                        radius = mod * intensity
+                        dx = math.cos(orbit_angle) * radius
+                        dy = math.sin(orbit_angle) * radius
+                        
+                        # Apply from home position, not current position
+                        x = home_x
+                        y = home_y
                     else:
                         dx, dy = 0, 0
                         
@@ -546,8 +581,8 @@ Connect output to WanVideoAddWanMoveTracks or WanMove_native.
                 new_x = x + dx
                 new_y = y + dy
                 
-                # Cast to Python float for JSON serialization
-                modulated_track.append({"x": float(new_x), "y": float(new_y)})
+                # Cast to Python float and round for JSON serialization and memory
+                modulated_track.append({"x": round(float(new_x), 2), "y": round(float(new_y), 2)})
             
             modulated_tracks.append(modulated_track)
         
@@ -562,6 +597,9 @@ Connect output to WanVideoAddWanMoveTracks or WanMove_native.
         print(f"\n{'='*60}")
         print(f"[WanSoundTrajectory] Complete! Output {len(output_str)} chars")
         print(f"{'='*60}\n")
+        
+        # Cleanup
+        gc.collect()
         
         return (output_str,)
 
@@ -641,6 +679,9 @@ Files are saved to: ComfyUI-WanSoundTrajectory/saved_trajectories/
         print(f"[WanTrajectorySaver] Saved trajectory to: {filepath}")
         print(f"[WanTrajectorySaver] Metadata: {width}x{height}, {frame_count} frames, {track_count} tracks")
         print(f"{'='*60}\n")
+        
+        # Cleanup
+        gc.collect()
         
         return ()
 
@@ -840,8 +881,8 @@ Press 'R' to refresh node definitions after saving new trajectories.
                 if "reversed" not in transforms_applied:
                     transforms_applied.append("reversed")
             
-            # Ensure Python floats for JSON
-            track = [{"x": float(p["x"]), "y": float(p["y"])} for p in track]
+            # Ensure Python floats and round for JSON
+            track = [{"x": round(float(p["x"]), 2), "y": round(float(p["y"]), 2)} for p in track]
             processed_tracks.append(track)
         
         if transforms_applied:
@@ -857,6 +898,9 @@ Press 'R' to refresh node definitions after saving new trajectories.
             output = processed_tracks
         
         output_str = json.dumps(output)
+        
+        # Cleanup
+        gc.collect()
         
         return (output_str, orig_width, orig_height, orig_frames, track_count)
 
@@ -1220,11 +1264,11 @@ Output feeds directly to WanMove, WanSoundTrajectory, or WanTrajectorySaver.
             seed=seed,
         )
         
-        # Ensure all values are Python floats for JSON
+        # Ensure all values are Python floats and rounded for JSON
         for track in tracks:
             for point in track:
-                point["x"] = float(point["x"])
-                point["y"] = float(point["y"])
+                point["x"] = round(float(point["x"]), 2)
+                point["y"] = round(float(point["y"]), 2)
         
         # Output format
         if len(tracks) == 1:
@@ -1235,6 +1279,9 @@ Output feeds directly to WanMove, WanSoundTrajectory, or WanTrajectorySaver.
         output_str = json.dumps(output)
         
         print(f"[WanTrajectoryGenerator] Generated {len(tracks)} tracks with {num_frames} points each")
+        
+        # Cleanup
+        gc.collect()
         
         return (output_str, width, height, num_frames)
 
@@ -1406,11 +1453,12 @@ Can append to existing coordinates to combine with generator patterns.
             x = kp["x"] * scale_x
             y = kp["y"] * scale_y
 
-            # Create static track (same position repeated for all frames)
-            track = [{"x": float(x), "y": float(y)} for _ in range(num_frames)]
+            # Create static track (same position repeated for all frames) - rounded
+            rx, ry = round(float(x), 2), round(float(y), 2)
+            track = [{"x": rx, "y": ry} for _ in range(num_frames)]
             new_tracks.append(track)
             
-            print(f"[WanPoseToTracks] Added track for {self.KEYPOINT_NAMES[idx]}: ({x:.1f}, {y:.1f})")
+            print(f"[WanPoseToTracks] Added track for {self.KEYPOINT_NAMES[idx]}: ({rx}, {ry})")
 
         # Handle existing coordinates
         if existing_coordinates and existing_coordinates.strip():
@@ -1442,7 +1490,7 @@ Can append to existing coordinates to combine with generator patterns.
                                 frac = src_pos - idx_low
                                 x = track[idx_low]["x"] + frac * (track[idx_high]["x"] - track[idx_low]["x"])
                                 y = track[idx_low]["y"] + frac * (track[idx_high]["y"] - track[idx_low]["y"])
-                                new_track.append({"x": float(x), "y": float(y)})
+                                new_track.append({"x": round(float(x), 2), "y": round(float(y), 2)})
                             resampled.append(new_track)
                     existing_tracks = resampled
 
@@ -1470,8 +1518,268 @@ Can append to existing coordinates to combine with generator patterns.
         print(f"\n{'='*60}")
         print(f"[WanPoseToTracks] Created {len(all_tracks)} tracks with {num_frames} frames each")
         print(f"{'='*60}\n")
+        
+        # Cleanup
+        gc.collect()
 
         return (output_str, target_width, target_height)
+
+
+class WanMove3DZoom:
+    """
+    Creates 3D point cloud from depth map with rotation and zoom animation.
+    Supports background/foreground isolation via depth range and mask input.
+    """
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),  # Expecting Depth Map (B,H,W,C)
+                "num_points": ("INT", {"default": 50, "min": 4, "max": 1000, "step": 1}),
+                "depth_scale": ("INT", {"default": 100, "min": 10, "max": 1000, "step": 10, "tooltip": "Depth range in pixels - how much Z separation between near and far"}),
+                "depth_falloff": ("FLOAT", {"default": 0.5, "min": 0.01, "max": 1.0, "step": 0.01, "tooltip": "Depth curve - 0.1=near focus, 0.5=linear, 1.0=far focus"}),
+                "depth_min": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Minimum depth to include (0=far/black). Use with depth_max to select background only."}),
+                "depth_max": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Maximum depth to include (1=near/white). Use with depth_min to select background only."}),
+                "duration": ("INT", {"default": 81, "min": 1, "max": 240, "step": 1, "tooltip": "Number of frames to generate"}),
+                "x_rotation": ("FLOAT", {"default": 0.0, "min": -360.0, "max": 360.0, "step": 1.0, "tooltip": "Vertical orbit - tilt up/down around subject"}),
+                "y_rotation": ("FLOAT", {"default": 30.0, "min": -360.0, "max": 360.0, "step": 1.0, "tooltip": "Horizontal orbit - circle left/right around subject"}),
+                "z_rotation": ("FLOAT", {"default": 0.0, "min": -360.0, "max": 360.0, "step": 1.0, "tooltip": "Roll - tilt horizon"}),
+                "zoom_amount": ("FLOAT", {"default": 0.0, "min": -0.8, "max": 2.0, "step": 0.05, "tooltip": "Zoom intensity - positive=zoom in, negative=zoom out, 0=no zoom"}),
+                "trajectory": (["Constant", "Ease In", "Ease Out", "Ease In Out"],),
+                "point_radius": ("INT", {"default": 5, "min": 1, "max": 20, "step": 1, "tooltip": "Preview dot size - doesn't affect output"}),
+                "export_width": ("INT", {"default": 512, "min": 64, "max": 4096, "tooltip": "Output coordinate space width"}),
+                "export_height": ("INT", {"default": 512, "min": 64, "max": 4096, "tooltip": "Output coordinate space height"}),
+            },
+            "optional": {
+                "mask": ("IMAGE", {"tooltip": "Optional mask - white areas include points, black areas exclude. Use for subject isolation."}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("preview_images", "coord_tracks")
+    FUNCTION = "generate"
+    CATEGORY = "WanSoundTrajectory"
+
+    def ease(self, t, mode):
+        if mode == "Constant":
+            return t
+        elif mode == "Ease In":
+            return t * t * t
+        elif mode == "Ease Out":
+            return 1 - pow(1 - t, 3)
+        elif mode == "Ease In Out":
+            if t < 0.5:
+                return 4 * t * t * t
+            else:
+                return 1 - pow(-2 * t + 2, 3) / 2
+        return t
+
+    def get_rotation_matrix(self, rx, ry, rz):
+        # Convert degrees to radians
+        rx, ry, rz = np.radians(rx), np.radians(ry), np.radians(rz)
+        
+        # Rotation matrices
+        Rx = np.array([
+            [1, 0, 0],
+            [0, np.cos(rx), -np.sin(rx)],
+            [0, np.sin(rx), np.cos(rx)]
+        ])
+        
+        Ry = np.array([
+            [np.cos(ry), 0, np.sin(ry)],
+            [0, 1, 0],
+            [-np.sin(ry), 0, np.cos(ry)]
+        ])
+        
+        Rz = np.array([
+            [np.cos(rz), -np.sin(rz), 0],
+            [np.sin(rz), np.cos(rz), 0],
+            [0, 0, 1]
+        ])
+        
+        # Combined rotation: Rz * Ry * Rx
+        return Rz @ Ry @ Rx
+
+    def generate(self, images, num_points, depth_scale, depth_falloff, depth_min, depth_max, 
+                 duration, x_rotation, y_rotation, z_rotation, zoom_amount, trajectory, 
+                 point_radius, export_width, export_height, mask=None):
+        
+        # 1. Process Input Image (Take first in batch)
+        # ComfyUI images are [B, H, W, C] tensors in range 0-1
+        t_img = images[0].permute(2, 0, 1)  # C, H, W
+        
+        # Resize depth map to export size to ensure accurate sampling
+        t_img = torch.nn.functional.interpolate(t_img.unsqueeze(0), size=(export_height, export_width), mode='bilinear', align_corners=False).squeeze(0)
+        
+        # Convert to numpy for pixel access (H, W, C)
+        depth_map = t_img.permute(1, 2, 0).cpu().numpy()
+        
+        # Collapse to grayscale if RGB
+        if depth_map.shape[2] > 1:
+            depth_map = cv2.cvtColor(depth_map, cv2.COLOR_RGB2GRAY)
+        else:
+            depth_map = depth_map[:, :, 0]
+
+        # Process mask if provided
+        mask_map = None
+        if mask is not None:
+            t_mask = mask[0].permute(2, 0, 1)  # C, H, W
+            t_mask = torch.nn.functional.interpolate(t_mask.unsqueeze(0), size=(export_height, export_width), mode='bilinear', align_corners=False).squeeze(0)
+            mask_map = t_mask.permute(1, 2, 0).cpu().numpy()
+            if mask_map.shape[2] > 1:
+                mask_map = cv2.cvtColor(mask_map, cv2.COLOR_RGB2GRAY)
+            else:
+                mask_map = mask_map[:, :, 0]
+
+        # 2. Distribute Key Points (Grid)
+        aspect = export_width / export_height
+        
+        # Calculate grid dimensions that approximate num_points while keeping aspect ratio
+        rows = int(math.sqrt(num_points / aspect))
+        rows = max(2, rows)
+        cols = int(num_points / rows)
+        cols = max(2, cols)
+        
+        # Generate Grid Coordinates
+        xs = np.linspace(0, export_width - 1, cols)
+        ys = np.linspace(0, export_height - 1, rows)
+        xv, yv = np.meshgrid(xs, ys)
+        
+        points_2d = np.stack([xv.flatten(), yv.flatten()], axis=1).astype(int)
+        
+        # Safety clamp
+        if len(points_2d) > 1000:
+            points_2d = points_2d[:1000]
+
+        # 3. Create 3D Point Cloud with Unprojection
+        points_3d = []
+        center_x = export_width / 2.0
+        center_y = export_height / 2.0
+        
+        focal_length = float(export_width)
+        base_camera_z = max(export_width * 1.5, depth_scale * 1.5)
+        
+        # Calculate Exponent for Depth Distribution
+        depth_exponent = 0.5 / max(0.01, depth_falloff)
+
+        for x, y in points_2d:
+            # Sample Depth: 0.0 (Far/Black) to 1.0 (Near/White)
+            d_raw = depth_map[y, x]
+            
+            # Check depth range filter
+            if d_raw < depth_min or d_raw > depth_max:
+                continue
+            
+            # Check mask if provided (white = include, black = exclude)
+            if mask_map is not None:
+                mask_val = mask_map[y, x]
+                if mask_val < 0.5:  # Below threshold = excluded
+                    continue
+            
+            # Apply Depth Falloff Curve
+            d_val = math.pow(d_raw, depth_exponent)
+            
+            # Map Depth to Z
+            z = (1.0 - d_val) * depth_scale - (depth_scale / 2.0)
+            
+            # BACK PROJECTION:
+            dist_from_cam = z + base_camera_z
+            inverse_scale = dist_from_cam / focal_length
+            
+            world_x = (x - center_x) * inverse_scale
+            world_y = (y - center_y) * inverse_scale
+            
+            points_3d.append([world_x, world_y, z])
+            
+        points_3d = np.array(points_3d)
+
+        # Handle case where all points are filtered out
+        if len(points_3d) == 0:
+            print(f"[WanMove3DZoom] WARNING: No points passed filters. Check depth_min/depth_max or mask.")
+            blank = torch.zeros((duration, export_height, export_width, 3))
+            return (blank, "[]")
+
+        print(f"[WanMove3DZoom] {len(points_3d)} points passed depth/mask filters")
+
+        # 4. Animate Frames
+        preview_frames = []
+        all_tracks_formatted = [[] for _ in range(len(points_3d))]
+        
+        for f in range(duration):
+            # Calculate progress (0.0 to 1.0)
+            t = f / max(1, duration - 1)
+            t_eased = self.ease(t, trajectory)
+            
+            # Current Rotation Angles
+            cur_x_rot = x_rotation * t_eased
+            cur_y_rot = y_rotation * t_eased
+            cur_z_rot = z_rotation * t_eased
+            
+            # Current Zoom (animate camera_z)
+            # zoom_amount positive = zoom in (smaller camera_z)
+            # zoom_amount negative = zoom out (larger camera_z)
+            camera_z = base_camera_z * (1.0 - zoom_amount * t_eased)
+            camera_z = max(focal_length * 0.5, camera_z)  # Prevent camera from going too close
+            
+            # Get Rotation Matrix
+            R = self.get_rotation_matrix(cur_x_rot, cur_y_rot, cur_z_rot)
+            
+            # Rotate Points
+            rotated_points = points_3d @ R.T
+            
+            # Create Preview Canvas (Black)
+            canvas = np.zeros((export_height, export_width, 3), dtype=np.uint8)
+            
+            # Sort points by Z (Painter's algorithm)
+            indexed_points = list(enumerate(rotated_points))
+            indexed_points.sort(key=lambda p: p[1][2], reverse=True)
+            
+            for original_idx, p in indexed_points:
+                px, py, pz = p
+                
+                # Perspective Projection with animated camera_z
+                dist = pz + camera_z
+                if dist < 1:
+                    dist = 1
+                
+                scale = focal_length / dist
+                
+                screen_x = int((px * scale) + center_x)
+                screen_y = int((py * scale) + center_y)
+                
+                # Store Coordinate (rounded for memory efficiency)
+                all_tracks_formatted[original_idx].append({
+                    "x": round(float(screen_x), 2),
+                    "y": round(float(screen_y), 2)
+                })
+                
+                # Drawing for Preview
+                r = max(1, int(point_radius * scale))
+                
+                norm_z = (pz + depth_scale) / (2 * depth_scale)
+                norm_z = np.clip(norm_z, 0, 1)
+                
+                b = int(255 * norm_z)
+                r_col = int(255 * (1 - norm_z))
+                g = int(100 * (1 - abs(0.5 - norm_z) * 2))
+                
+                cv2.circle(canvas, (screen_x, screen_y), r, (b, g, r_col), -1)
+            
+            # Convert OpenCV (BGR) to Tensor (RGB)
+            canvas = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+            tensor_img = torch.from_numpy(canvas).float() / 255.0
+            preview_frames.append(tensor_img)
+
+        # Stack frames into batch
+        preview_tensor = torch.stack(preview_frames)
+        
+        # Serialize Coordinates
+        json_output = json.dumps(all_tracks_formatted)
+        
+        print(f"[WanMove3DZoom] Generated {len(points_3d)} tracks, {duration} frames, zoom={zoom_amount}")
+        
+        return (preview_tensor, json_output)
 
 
 # ComfyUI registration
@@ -1481,6 +1789,7 @@ NODE_CLASS_MAPPINGS = {
     "WanTrajectoryLoader": WanTrajectoryLoader,
     "WanTrajectoryGenerator": WanTrajectoryGenerator,
     "WanPoseToTracks": WanPoseToTracks,
+    "WanMove3DZoom": WanMove3DZoom,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1489,4 +1798,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "WanTrajectoryLoader": "Wan Trajectory Loader",
     "WanTrajectoryGenerator": "Wan Trajectory Generator",
     "WanPoseToTracks": "Wan Pose To Tracks",
+    "WanMove3DZoom": "Wan Move 3D Zoom",
 }
