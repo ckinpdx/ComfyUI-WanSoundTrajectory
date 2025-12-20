@@ -937,6 +937,7 @@ Output feeds directly to WanMove, WanSoundTrajectory, or WanTrajectorySaver.
         return {
             "required": {
                 "pattern": ([
+                    "linear",
                     "oscillate",
                     "spiral",
                     "orbit",
@@ -946,7 +947,7 @@ Output feeds directly to WanMove, WanSoundTrajectory, or WanTrajectorySaver.
                     "bounce",
                     "zoom",
                     "wave",
-                ], {"default": "oscillate", "tooltip": "oscillate=bounce, spiral=spin in/out, orbit=circle, diverge=explode, converge=implode, bounce=ball physics, zoom=radial"}),
+                ], {"default": "linear", "tooltip": "linear=straight lines, oscillate=sine wave, spiral=spin in/out, orbit=circle, diverge=explode, converge=implode, bounce=ball physics, zoom=radial"}),
                 "num_frames": ("INT", {"default": 81, "min": 2, "max": 1000, "step": 1, "tooltip": "Total frames. Should match your video length. Must be valid WanMove count (81, 101, etc)."}),
                 "num_tracks": ("INT", {"default": 1, "min": 1, "max": 20, "step": 1, "tooltip": "Number of separate track points. 1=single path, multiple=complex patterns."}),
                 "width": ("INT", {"default": 832, "min": 64, "max": 4096, "step": 8, "tooltip": "Canvas width in pixels. Should match your output resolution."}),
@@ -960,13 +961,14 @@ Output feeds directly to WanMove, WanSoundTrajectory, or WanTrajectorySaver.
                 "phase_offset": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 360.0, "step": 1.0, "tooltip": "Starting angle in degrees. Offsets where motion begins in the cycle."}),
                 "direction": (["clockwise", "counterclockwise", "outward", "inward", "horizontal", "vertical", "diagonal"], 
                              {"default": "clockwise", "tooltip": "Movement direction. Available options depend on pattern type."}),
+                "alternate_direction": ("BOOLEAN", {"default": False, "tooltip": "When enabled, odd-numbered tracks move opposite direction to even tracks."}),
                 "seed": ("INT", {"default": 42, "min": 0, "max": 0xffffffff, "step": 1, "tooltip": "Random seed for random_walk and bounce patterns. Same seed = same path."}),
             }
         }
 
     def _oscillate(self, num_frames: int, num_tracks: int, width: int, height: int,
                    center_x: float, center_y: float, amplitude: float, frequency: float,
-                   phase_offset: float, direction: str, **kwargs) -> List[List[Dict]]:
+                   phase_offset: float, direction: str, alternate_direction: bool = False, **kwargs) -> List[List[Dict]]:
         """Ping-pong oscillation pattern."""
         tracks = []
         cx, cy = center_x * width, center_y * height
@@ -976,6 +978,10 @@ Output feeds directly to WanMove, WanSoundTrajectory, or WanTrajectorySaver.
         for t in range(num_tracks):
             track = []
             track_phase = phase_offset + (t * 360 / num_tracks)
+            
+            # Flip phase by 180 degrees for odd-numbered tracks if alternate is on
+            if alternate_direction and t % 2 == 1:
+                track_phase += 180
             
             for f in range(num_frames):
                 progress = f / max(num_frames - 1, 1)
@@ -998,21 +1004,28 @@ Output feeds directly to WanMove, WanSoundTrajectory, or WanTrajectorySaver.
 
     def _spiral(self, num_frames: int, num_tracks: int, width: int, height: int,
                 center_x: float, center_y: float, amplitude: float, frequency: float,
-                phase_offset: float, direction: str, **kwargs) -> List[List[Dict]]:
+                phase_offset: float, direction: str, alternate_direction: bool = False, **kwargs) -> List[List[Dict]]:
         """Spiral pattern - outward or inward."""
         tracks = []
         cx, cy = center_x * width, center_y * height
         max_radius = amplitude * min(width, height)
         
+        base_inward = direction == "inward"
+        
         for t in range(num_tracks):
             track = []
             track_phase = phase_offset + (t * 360 / num_tracks)
+            
+            # Flip inward/outward for odd-numbered tracks if alternate is on
+            is_inward = base_inward
+            if alternate_direction and t % 2 == 1:
+                is_inward = not is_inward
             
             for f in range(num_frames):
                 progress = f / max(num_frames - 1, 1)
                 angle = math.radians(track_phase) + progress * frequency * 2 * math.pi
                 
-                if direction == "inward":
+                if is_inward:
                     radius = max_radius * (1 - progress)
                 else:  # outward
                     radius = max_radius * progress
@@ -1027,17 +1040,21 @@ Output feeds directly to WanMove, WanSoundTrajectory, or WanTrajectorySaver.
 
     def _orbit(self, num_frames: int, num_tracks: int, width: int, height: int,
                center_x: float, center_y: float, amplitude: float, frequency: float,
-               phase_offset: float, direction: str, **kwargs) -> List[List[Dict]]:
+               phase_offset: float, direction: str, alternate_direction: bool = False, **kwargs) -> List[List[Dict]]:
         """Circular orbit pattern."""
         tracks = []
         cx, cy = center_x * width, center_y * height
-        radius = amplitude * min(width, height)
+        # Use half the min dimension so amplitude=1.0 means orbit touches edges
+        radius = amplitude * min(width, height) / 2
         
-        direction_mult = -1 if direction == "counterclockwise" else 1
+        base_direction = -1 if direction == "counterclockwise" else 1
         
         for t in range(num_tracks):
             track = []
             track_phase = phase_offset + (t * 360 / num_tracks)
+            
+            # Flip direction for odd-numbered tracks if alternate is on
+            direction_mult = base_direction * (-1 if (alternate_direction and t % 2 == 1) else 1)
             
             for f in range(num_frames):
                 progress = f / max(num_frames - 1, 1)
@@ -1045,6 +1062,64 @@ Output feeds directly to WanMove, WanSoundTrajectory, or WanTrajectorySaver.
                 
                 x = cx + math.cos(angle) * radius
                 y = cy + math.sin(angle) * radius
+                
+                track.append({"x": x, "y": y})
+            tracks.append(track)
+        
+        return tracks
+
+    def _linear(self, num_frames: int, num_tracks: int, width: int, height: int,
+                center_x: float, center_y: float, amplitude: float, frequency: float,
+                phase_offset: float, direction: str, alternate_direction: bool = False, **kwargs) -> List[List[Dict]]:
+        """Straight line motion - up/down or left/right, starting from center."""
+        tracks = []
+        cx, cy = center_x * width, center_y * height
+        amp_x = amplitude * width / 2
+        amp_y = amplitude * height / 2
+        
+        def linear_from_center(progress, invert=False):
+            """Linear ping-pong starting and ending at center"""
+            p = progress % 1.0
+            
+            if p < 0.25:
+                # center to top: 0 -> 1
+                val = p * 4
+            elif p < 0.75:
+                # top to bottom: 1 -> -1
+                val = 1 - (p - 0.25) * 4
+            else:
+                # bottom to center: -1 -> 0
+                val = -1 + (p - 0.75) * 4
+            
+            return -val if invert else val
+        
+        for t in range(num_tracks):
+            track = []
+            # Spread multiple tracks across the perpendicular axis (full canvas)
+            if num_tracks > 1:
+                spread = t / (num_tracks - 1)  # 0 to 1
+            else:
+                spread = 0.5  # single track at center
+            
+            # Flip direction for odd-numbered tracks if alternate is on
+            invert = alternate_direction and t % 2 == 1
+            
+            for f in range(num_frames):
+                progress = (f / max(num_frames - 1, 1)) * frequency
+                linear_pos = linear_from_center(progress, invert)
+                
+                if direction == "vertical":
+                    x = width * spread
+                    y = cy + linear_pos * amp_y
+                elif direction == "horizontal":
+                    x = cx + linear_pos * amp_x
+                    y = height * spread
+                elif direction == "diagonal":
+                    x = cx + linear_pos * amp_x
+                    y = cy + linear_pos * amp_y
+                else:  # default vertical
+                    x = width * spread
+                    y = cy + linear_pos * amp_y
                 
                 track.append({"x": x, "y": y})
             tracks.append(track)
@@ -1166,10 +1241,12 @@ Output feeds directly to WanMove, WanSoundTrajectory, or WanTrajectorySaver.
 
     def _zoom(self, num_frames: int, num_tracks: int, width: int, height: int,
               center_x: float, center_y: float, amplitude: float, frequency: float,
-              phase_offset: float, direction: str, **kwargs) -> List[List[Dict]]:
+              phase_offset: float, direction: str, alternate_direction: bool = False, **kwargs) -> List[List[Dict]]:
         """Radial zoom - toward or away from center."""
         tracks = []
         cx, cy = center_x * width, center_y * height
+        
+        base_inward = direction == "inward"
         
         for t in range(num_tracks):
             track = []
@@ -1177,10 +1254,15 @@ Output feeds directly to WanMove, WanSoundTrajectory, or WanTrajectorySaver.
             angle = math.radians(phase_offset + (t * 360 / num_tracks))
             start_radius = amplitude * min(width, height)
             
+            # Flip inward/outward for odd-numbered tracks if alternate is on
+            is_inward = base_inward
+            if alternate_direction and t % 2 == 1:
+                is_inward = not is_inward
+            
             for f in range(num_frames):
                 progress = f / max(num_frames - 1, 1)
                 
-                if direction == "inward":
+                if is_inward:
                     radius = start_radius * (1 - progress)
                 else:  # outward
                     radius = start_radius * progress
@@ -1195,7 +1277,7 @@ Output feeds directly to WanMove, WanSoundTrajectory, or WanTrajectorySaver.
 
     def _wave(self, num_frames: int, num_tracks: int, width: int, height: int,
               center_x: float, center_y: float, amplitude: float, frequency: float,
-              phase_offset: float, direction: str, **kwargs) -> List[List[Dict]]:
+              phase_offset: float, direction: str, alternate_direction: bool = False, **kwargs) -> List[List[Dict]]:
         """Wave pattern - tracks in a line doing synchronized wave."""
         tracks = []
         amp = amplitude * height * 0.5
@@ -1206,10 +1288,13 @@ Output feeds directly to WanMove, WanSoundTrajectory, or WanTrajectorySaver.
             base_x = width * (t + 1) / (num_tracks + 1)
             base_y = center_y * height
             
+            # Flip phase by 180 degrees for odd-numbered tracks if alternate is on
+            alt_phase = 180 if (alternate_direction and t % 2 == 1) else 0
+            
             for f in range(num_frames):
                 progress = f / max(num_frames - 1, 1)
                 # Phase offset based on track position for wave effect
-                wave_phase = phase_offset + (t * 45)
+                wave_phase = phase_offset + (t * 45) + alt_phase
                 angle = math.radians(wave_phase) + progress * frequency * 2 * math.pi
                 
                 if direction == "horizontal":
@@ -1227,16 +1312,19 @@ Output feeds directly to WanMove, WanSoundTrajectory, or WanTrajectorySaver.
     def generate(self, pattern: str, num_frames: int, num_tracks: int, width: int, height: int,
                  center_x: float = 0.5, center_y: float = 0.5, amplitude: float = 0.3,
                  frequency: float = 1.0, phase_offset: float = 0.0, direction: str = "clockwise",
-                 seed: int = 42) -> Tuple[str, int, int, int]:
+                 alternate_direction: bool = False, seed: int = 42) -> Tuple[str, int, int, int]:
         """Generate trajectory pattern."""
         
         print(f"\n{'='*60}")
         print(f"[WanTrajectoryGenerator] Generating pattern: {pattern}")
         print(f"[WanTrajectoryGenerator] {num_tracks} tracks, {num_frames} frames, {width}x{height}")
+        if alternate_direction:
+            print(f"[WanTrajectoryGenerator] Alternate direction: ON")
         print(f"{'='*60}\n")
         
         # Get the pattern generator method
         generators = {
+            "linear": self._linear,
             "oscillate": self._oscillate,
             "spiral": self._spiral,
             "orbit": self._orbit,
@@ -1261,6 +1349,7 @@ Output feeds directly to WanMove, WanSoundTrajectory, or WanTrajectorySaver.
             frequency=frequency,
             phase_offset=phase_offset,
             direction=direction,
+            alternate_direction=alternate_direction,
             seed=seed,
         )
         
@@ -1781,6 +1870,103 @@ class WanMove3DZoom:
         
         return (preview_tensor, json_output)
 
+class WanTrajectoryConcat:
+    """
+    Concatenates multiple trajectory coordinate sets into one.
+    Useful for combining outputs from different generators (e.g., orbit + zoom).
+    """
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("coordinates",)
+    FUNCTION = "concat"
+    CATEGORY = "WanSoundTrajectory"
+    DESCRIPTION = """
+Combines multiple trajectory coordinate sets into a single output.
+
+Use this to merge tracks from different sources:
+- TrajectoryGenerator orbit + WanMove3DZoom depth tracks
+- Multiple generator patterns layered together
+- Loaded trajectories combined with generated ones
+
+All inputs must have the same frame count. Tracks are appended in order.
+"""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "coordinates_a": ("STRING", {"forceInput": True, "tooltip": "First set of trajectory coordinates."}),
+            },
+            "optional": {
+                "coordinates_b": ("STRING", {"forceInput": True, "tooltip": "Second set of trajectory coordinates."}),
+                "coordinates_c": ("STRING", {"forceInput": True, "tooltip": "Third set of trajectory coordinates."}),
+                "coordinates_d": ("STRING", {"forceInput": True, "tooltip": "Fourth set of trajectory coordinates."}),
+            }
+        }
+
+    def _parse_coords(self, coords_str: str) -> List[List[Dict]]:
+        """Parse coordinate string and normalize to list of tracks."""
+        if not coords_str or coords_str.strip() == "":
+            return []
+        
+        try:
+            parsed = json.loads(coords_str.replace("'", '"'))
+            
+            if not parsed:
+                return []
+            
+            # Normalize to list of tracks
+            if isinstance(parsed[0], dict) and 'x' in parsed[0]:
+                # Single track
+                return [parsed]
+            else:
+                # Multiple tracks
+                return parsed
+                
+        except (json.JSONDecodeError, IndexError, KeyError) as e:
+            print(f"[WanTrajectoryConcat] WARNING: Failed to parse coordinates: {e}")
+            return []
+
+    def concat(
+        self,
+        coordinates_a: str,
+        coordinates_b: str = None,
+        coordinates_c: str = None,
+        coordinates_d: str = None,
+    ) -> Tuple[str]:
+        """Concatenate multiple coordinate sets."""
+        
+        all_tracks = []
+        frame_counts = []
+        
+        # Process each input
+        for i, coords in enumerate([coordinates_a, coordinates_b, coordinates_c, coordinates_d]):
+            if coords is None:
+                continue
+                
+            tracks = self._parse_coords(coords)
+            if tracks:
+                all_tracks.extend(tracks)
+                # Track frame count from first track in each input
+                if tracks[0]:
+                    frame_counts.append(len(tracks[0]))
+        
+        if not all_tracks:
+            print("[WanTrajectoryConcat] WARNING: No valid tracks found in any input")
+            return ("[]",)
+        
+        # Warn if frame counts don't match
+        if len(set(frame_counts)) > 1:
+            print(f"[WanTrajectoryConcat] WARNING: Mismatched frame counts: {frame_counts}")
+            print("[WanTrajectoryConcat] Results may be unexpected - all tracks should have same frame count")
+        
+        print(f"[WanTrajectoryConcat] Combined {len(all_tracks)} tracks, {frame_counts[0] if frame_counts else 0} frames each")
+        
+        # Output as multi-track format
+        output_str = json.dumps(all_tracks)
+        
+        return (output_str,)
+
 
 # ComfyUI registration
 NODE_CLASS_MAPPINGS = {
@@ -1790,6 +1976,7 @@ NODE_CLASS_MAPPINGS = {
     "WanTrajectoryGenerator": WanTrajectoryGenerator,
     "WanPoseToTracks": WanPoseToTracks,
     "WanMove3DZoom": WanMove3DZoom,
+    "WanTrajectoryConcat": WanTrajectoryConcat,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1799,4 +1986,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "WanTrajectoryGenerator": "Wan Trajectory Generator",
     "WanPoseToTracks": "Wan Pose To Tracks",
     "WanMove3DZoom": "Wan Move 3D Zoom",
+    "WanTrajectoryConcat": "Wan Trajectory Concat",
 }
