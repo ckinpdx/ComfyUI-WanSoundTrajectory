@@ -427,7 +427,22 @@ Connect output to WanVideoAddWanMoveTracks or WanMove_native.
 
         # Process each track
         modulated_tracks = []
-        
+
+        # calculate center of static points for radial_from_center mode
+        static_points_positions = []
+        for track in tracks:
+            if self._is_static_point(track) and len(track) > 0:
+                static_points_positions.append((track[0]['x'], track[0]['y']))
+
+        if static_points_positions:
+            static_center_x = sum(p[0] for p in static_points_positions) / len(static_points_positions)
+            static_center_y = sum(p[1] for p in static_points_positions) / len(static_points_positions)
+            print(f"[WanSoundTrajectory] Static points centroid: ({static_center_x:.1f}, {static_center_y:.1f}) from {len(static_points_positions)} points")
+        else:
+            static_center_x = 512
+            static_center_y = 512
+            print(f"[WanSoundTrajectory] Static points centroid: ({static_center_x:.1f}, {static_center_y:.1f}) (default)")
+
         # Generate per-point random angles for local_orbit mode (seeded for consistency)
         np.random.seed(42)
         
@@ -473,13 +488,10 @@ Connect output to WanVideoAddWanMoveTracks or WanMove_native.
             # Modulate each point
             modulated_track = []
             
-            # Get frame center for radial_from_center mode (assume standard video dimensions)
-            # We'll use the first point as reference since we don't have frame dims
+            # Get center for radial_from_center mode (centroid of static points)
             if is_static and static_point_axis == "radial_from_center":
-                # Estimate frame center - this is a guess, could be improved with actual dims
-                # For now, assume the point isn't at center and use a reasonable frame center
-                frame_center_x = 512  # Default assumption
-                frame_center_y = 512
+                frame_center_x = static_center_x
+                frame_center_y = static_center_y
             
             # For local_orbit mode, generate a consistent random angle for this track
             if is_static and static_point_axis == "local_orbit":
